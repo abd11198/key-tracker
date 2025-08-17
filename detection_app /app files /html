@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dual Camera Key Tracker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #0a0a2e 0%, #16213e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(0, 150, 255, 0.1);
+            border-radius: 15px;
+            border: 2px solid #0096ff;
+            box-shadow: 0 4px 20px rgba(0, 150, 255, 0.3);
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            color: #0096ff;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.2em;
+            color: #b8d4ff;
+        }
+
+        .camera-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .camera-container {
+            background: rgba(10, 20, 40, 0.8);
+            border-radius: 15px;
+            padding: 20px;
+            border: 2px solid #0096ff;
+            box-shadow: 0 8px 32px rgba(0, 150, 255, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .camera-container:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0, 150, 255, 0.4);
+        }
+
+        .camera-title {
+            font-size: 1.5em;
+            color: #0096ff;
+            margin-bottom: 15px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .camera-feed {
+            width: 100%;
+            max-width: 640px;
+            height: 480px;
+            border-radius: 10px;
+            border: 3px solid #0096ff;
+            box-shadow: 0 4px 15px rgba(0, 150, 255, 0.3);
+            object-fit: cover;
+            display: block;
+            margin: 0 auto;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 10px;
+            padding: 10px;
+            background: rgba(0, 150, 255, 0.1);
+            border-radius: 8px;
+            border: 1px solid #0096ff;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #00ff88;
+            margin-right: 10px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .notifications-section {
+            background: rgba(10, 20, 40, 0.9);
+            border-radius: 15px;
+            padding: 25px;
+            border: 2px solid #0096ff;
+            box-shadow: 0 8px 32px rgba(0, 150, 255, 0.2);
+        }
+
+        .notifications-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .notifications-title {
+            font-size: 1.8em;
+            color: #0096ff;
+            margin-right: 15px;
+        }
+
+        .notification-count {
+            background: #0096ff;
+            color: #000000;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+
+        .notifications-list {
+            max-height: 300px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #0096ff #1a2a4a;
+        }
+
+        .notifications-list::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .notifications-list::-webkit-scrollbar-track {
+            background: #1a2a4a;
+            border-radius: 4px;
+        }
+
+        .notifications-list::-webkit-scrollbar-thumb {
+            background: #0096ff;
+            border-radius: 4px;
+        }
+
+        .notification-item {
+            background: rgba(0, 150, 255, 0.1);
+            border: 1px solid #0096ff;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            transition: all 0.3s ease;
+        }
+
+        .notification-item:hover {
+            background: rgba(0, 150, 255, 0.2);
+            transform: translateX(5px);
+        }
+
+        .notification-message {
+            font-size: 1.1em;
+            color: #ffffff;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .notification-timestamp {
+            font-size: 0.9em;
+            color: #0096ff;
+            font-weight: bold;
+        }
+
+        .no-notifications {
+            text-align: center;
+            color: #7da3d4;
+            font-style: italic;
+            padding: 20px;
+        }
+
+        .controls {
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .control-btn {
+            background: linear-gradient(45deg, #0096ff, #0066cc);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            margin: 0 10px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 150, 255, 0.3);
+        }
+
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 150, 255, 0.5);
+        }
+
+        .control-btn:active {
+            transform: translateY(0);
+        }
+
+        @media (max-width: 768px) {
+            .camera-grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .camera-feed {
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔑 Dual Camera Key Tracker</h1>
+            <p>Advanced key tracking system with dual camera monitoring</p>
+        </div>
+
+        <div class="camera-grid">
+            <div class="camera-container">
+                <div class="camera-title">📹 Camera 1 - Room One</div>
+                <img src="/video_feed/0" alt="Camera 1 Feed" class="camera-feed">
+                <div class="status-indicator">
+                    <div class="status-dot"></div>
+                    <span>Live Feed Active</span>
+                </div>
+            </div>
+
+            <div class="camera-container">
+                <div class="camera-title">📹 Camera 2 - Room Two</div>
+                <img src="/video_feed/1" alt="Camera 2 Feed" class="camera-feed">
+                <div class="status-indicator">
+                    <div class="status-dot"></div>
+                    <span>Live Feed Active</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="notifications-section">
+            <div class="notifications-header">
+                <h2 class="notifications-title">🔔 Notifications</h2>
+                <span class="notification-count" id="notification-count">0</span>
+            </div>
+            <div class="notifications-list" id="notifications-list">
+                <div class="no-notifications">No notifications yet. Key tracking is active...</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="control-btn" onclick="clearNotifications()">Clear Notifications</button>
+            <button class="control-btn" onclick="refreshFeeds()">Refresh Feeds</button>
+        </div>
+    </div>
+
+    <script>
+        let notificationCount = 0;
+
+        function fetchNotifications() {
+            fetch('/get_notifications')
+                .then(response => response.json())
+                .then(notifications => {
+                    const notificationsList = document.getElementById('notifications-list');
+                    const notificationCountElement = document.getElementById('notification-count');
+
+                    if (notifications.length === 0) {
+                        notificationsList.innerHTML = '<div class="no-notifications">No notifications yet. Key tracking is active...</div>';
+                        notificationCountElement.textContent = '0';
+                        return;
+                    }
+
+                    notificationCountElement.textContent = notifications.length;
+
+                    // Sort notifications by timestamp (newest first)
+                    notifications.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+                    notificationsList.innerHTML = notifications.map(notification => `
+                        <div class="notification-item">
+                            <div class="notification-message">${notification.message}</div>
+                            <div class="notification-timestamp">⏰ ${notification.timestamp}</div>
+                        </div>
+                    `).join('');
+
+                    // Auto-scroll to top when new notifications arrive
+                    if (notifications.length > notificationCount) {
+                        notificationsList.scrollTop = 0;
+                    }
+                    notificationCount = notifications.length;
+                })
+                .catch(error => {
+                    console.error('Error fetching notifications:', error);
+                });
+        }
+
+        function clearNotifications() {
+            // This would need a backend endpoint to clear notifications
+            // For now, we'll just clear the display
+            const notificationsList = document.getElementById('notifications-list');
+            const notificationCountElement = document.getElementById('notification-count');
+
+            notificationsList.innerHTML = '<div class="no-notifications">Notifications cleared. Key tracking is active...</div>';
+            notificationCountElement.textContent = '0';
+            notificationCount = 0;
+        }
+
+        function refreshFeeds() {
+            // Force refresh of camera feeds
+            const cameraFeeds = document.querySelectorAll('.camera-feed');
+            cameraFeeds.forEach(feed => {
+                const currentSrc = feed.src;
+                feed.src = '';
+                setTimeout(() => {
+                    feed.src = currentSrc;
+                }, 100);
+            });
+        }
+
+        // Poll for new notifications every 2 seconds
+        setInterval(fetchNotifications, 2000);
+
+        // Initial fetch
+        fetchNotifications();
+
+        // Add some visual feedback when notifications are received
+        let lastNotificationCount = 0;
+        setInterval(() => {
+            if (notificationCount > lastNotificationCount) {
+                // Flash the notifications section
+                const notificationsSection = document.querySelector('.notifications-section');
+                notificationsSection.style.boxShadow = '0 8px 32px rgba(0, 150, 255, 0.8)';
+                setTimeout(() => {
+                    notificationsSection.style.boxShadow = '0 8px 32px rgba(0, 150, 255, 0.2)';
+                }, 500);
+            }
+            lastNotificationCount = notificationCount;
+        }, 2000);
+    </script>
+</body>
+</html>
