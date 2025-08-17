@@ -5,7 +5,6 @@
 Real-time detection & tracking of personal keys with **movement alerts, screenshots, and multi-camera support**.  
 Train quickly on **Google Colab**, then run the **multi-camera app in PyCharm** (or plain Python) to watch your keys and get notified when they move.
 
-> Built for: Abed Elkareem Nassar · Updated: 2025-08-17
 
 ---
 
