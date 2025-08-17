@@ -1,0 +1,730 @@
+import cv2
+import numpy as np
+import time
+import os
+import threading
+from ultralytics import YOLO
+from collections import defaultdict
+import random
+import math
+import json
+from datetime import datetime
+
+# Try to import plyer for notifications, with better error handling for macOS
+try:
+    from plyer import notification
+
+    # Test if notification actually works
+    notification.notify(title="Test", message="", timeout=0.1)
+    HAS_PLYER = True
+    print("✅ Desktop notifications enabled")
+except Exception as e:
+    HAS_PLYER = False
+    if "pyobjus" in str(e):
+        print("⚠️  macOS notifications require additional setup")
+        print("   Install with: pip install pyobjus (for macOS notifications)")
+        print("   Or disable notifications by setting NOTIFICATION_ENABLED = False")
+    else:
+        print("⚠️  Desktop notifications disabled - using console only")
+        print(f"   Reason: {str(e)}")
+
+# -------------- CONFIG -----------------
+KEY_MODEL_PATH = "runs/detect/train/weights/best.pt"  # Your trained model
+OBJ_MODEL_NAME = "yolov8n.pt"  # Pre-trained YOLOv8 for general object detection
+
+# IMPROVED DETECTION PARAMETERS
+CONF_THRESHOLD_KEYS = 0.4  # Increased to reduce false positives
+CONF_THRESHOLD_OBJECTS = 0.2
+IOU_THRESHOLD = 0.5  # NEW: IoU threshold for NMS
+MAX_DETECTIONS = 10  # NEW: Maximum detections per class
+
+# Distance thresholds for duplicate detection
+MIN_DISTANCE_BETWEEN_KEYS = 100  # Minimum pixels between different key instances
+TRACKING_DISTANCE_THRESHOLD = 50  # Maximum distance for tracking same key across frames
+
+FRAME_WIDTH, FRAME_HEIGHT = 1280, 640
+MOVEMENT_THRESHOLD = 15  # pixels
+STABLE_DURATION = 1.5  # secondså
+PROXIMITY_THRESHOLD = 200  # pixels for "near" detection
+SCREENSHOT_DIR = "screenshots"
+LOG_FILE = "key_movements.json"
+
+# Notification settings
+NOTIFICATION_ENABLED = True
+NOTIFICATION_TIMEOUT = 10  # seconds
+NOTIFICATION_COOLDOWN = 15  # seconds between notifications for same key
+
+# Debug settings
+DEBUG_MODE = True  # Set to False to reduce console output
+
+os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+
+# Enhanced priority objects with more items
+PRIORITY_OBJECTS = {
+    # Electronics (High Priority)
+    'cell phone': 5, 'phone': 5, 'laptop': 4, 'computer': 4, 'keyboard': 4,
+    'mouse': 4, 'tablet': 4, 'tv': 3, 'monitor': 3, 'remote': 4,
+    'headphones': 4, 'earphones': 4, 'speaker': 3, 'camera': 4,
+
+    # Personal items (High Priority)
+    'wallet': 5, 'purse': 5, 'handbag': 5, 'backpack': 4, 'bag': 4,
+    'suitcase': 3, 'briefcase': 4, 'watch': 4, 'sunglasses': 4,
+
+    # Furniture & Surfaces (Medium Priority)
+    'chair': 3, 'couch': 3, 'sofa': 3, 'bed': 3, 'desk': 4,
+    'dining table': 4, 'coffee table': 4, 'nightstand': 4,
+    'dresser': 3, 'cabinet': 3, 'shelf': 3,
+
+    # Common objects (Medium Priority)
+    'book': 3, 'notebook': 3, 'cup': 3, 'mug': 3, 'bottle': 3,
+    'glass': 2, 'plate': 2, 'bowl': 2, 'clock': 3, 'lamp': 3,
+
+    # Clothing & Accessories (Low-Medium Priority)
+    'shoe': 2, 'hat': 2, 'tie': 2, 'belt': 2,
+
+    # Appliances (Medium Priority)
+    'microwave': 2, 'toaster': 2, 'refrigerator': 2, 'oven': 2,
+
+    # Sports & Recreation (Low Priority)
+    'ball': 1, 'racket': 1, 'bicycle': 2,
+
+    # Transportation (Low Priority)
+    'car': 1, 'motorcycle': 1, 'truck': 1
+}
+
+
+class KeyTracker:
+    def __init__(self):
+        self.model_keys = YOLO(KEY_MODEL_PATH)
+        self.model_objects = YOLO(OBJ_MODEL_NAME)
+
+        # Enhanced tracking with unique IDs
+        self.last_positions = {}
+        self.key_tracking_ids = {}  # NEW: Track unique key instances
+        self.next_tracking_id = 0  # NEW: Counter for unique IDs
+        self.current_key_locations = {}  # NEW: Store current location of each key
+
+        self.movement_status = defaultdict(lambda: {
+            "moving": False,
+            "last_moved_time": 0,
+            "stable_count": 0,
+            "last_notification": 0,
+            "last_objects": [],
+            "has_moved": False,
+            "initial_position": None,
+            "tracking_id": None  # NEW: Unique tracking ID
+        })
+
+        self.class_colors = {}
+        self.movement_log = []
+        self.font = cv2.FONT_HERSHEY_SIMPLEX
+
+        print("✅ Loaded key classes:", self.model_keys.names)
+        print("✅ System ready - Move your keys to get notifications!")
+        print("💬 Type 'where is [key_name]' to find your keys!")
+        print("=" * 50)
+
+    def get_center(self, x1, y1, x2, y2):
+        return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+    def assign_color(self, label):
+        if label not in self.class_colors:
+            random.seed(hash(label) % 9999)
+            self.class_colors[label] = tuple(np.random.randint(64, 255, 3).tolist())
+        return self.class_colors[label]
+
+    def calculate_distance(self, pos1, pos2):
+        return math.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
+
+    def calculate_iou(self, box1, box2):
+        """Calculate Intersection over Union (IoU) of two bounding boxes"""
+        x1_1, y1_1, x2_1, y2_1 = box1
+        x1_2, y1_2, x2_2, y2_2 = box2
+
+        # Calculate intersection coordinates
+        x1_inter = max(x1_1, x1_2)
+        y1_inter = max(y1_1, y1_2)
+        x2_inter = min(x2_1, x2_2)
+        y2_inter = min(y2_1, y2_2)
+
+        # Calculate intersection area
+        if x2_inter < x1_inter or y2_inter < y1_inter:
+            return 0.0
+
+        intersection = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+
+        # Calculate union area
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+
+        return intersection / union if union > 0 else 0.0
+
+    def apply_nms(self, detections):
+        """Apply Non-Maximum Suppression to remove duplicate detections"""
+        if len(detections) <= 1:
+            return detections
+
+        # Sort by confidence score (descending)
+        detections.sort(key=lambda x: x[4], reverse=True)
+
+        keep = []
+        for i, detection in enumerate(detections):
+            should_keep = True
+            current_box = detection[:4]
+            current_class = detection[5]
+
+            for kept_detection in keep:
+                kept_box = kept_detection[:4]
+                kept_class = kept_detection[5]
+
+                # Only compare detections of the same class
+                if current_class == kept_class:
+                    iou = self.calculate_iou(current_box, kept_box)
+                    if iou > IOU_THRESHOLD:
+                        should_keep = False
+                        break
+
+            if should_keep:
+                keep.append(detection)
+
+        return keep
+
+    def filter_close_detections(self, detections):
+        """Additional filtering for detections that are too close together"""
+        if len(detections) <= 1:
+            return detections
+
+        filtered = []
+
+        for detection in detections:
+            x1, y1, x2, y2, score, class_id = detection
+            center = self.get_center(x1, y1, x2, y2)
+            class_name = self.model_keys.names[int(class_id)]
+
+            # Check if this detection is too close to any already filtered detection
+            too_close = False
+            for filtered_detection in filtered:
+                fx1, fy1, fx2, fy2, fscore, fclass_id = filtered_detection
+                fcenter = self.get_center(fx1, fy1, fx2, fy2)
+                fclass_name = self.model_keys.names[int(fclass_id)]
+
+                # Only check distance for same class
+                if class_name == fclass_name:
+                    distance = self.calculate_distance(center, fcenter)
+                    if distance < MIN_DISTANCE_BETWEEN_KEYS:
+                        too_close = True
+                        break
+
+            if not too_close:
+                filtered.append(detection)
+
+        return filtered
+
+    def assign_tracking_id(self, center, class_name):
+        """Assign consistent tracking IDs to key detections across frames"""
+        # Find the closest existing key of the same class
+        best_match_id = None
+        min_distance = float('inf')
+
+        for key_id, (last_center, last_class) in self.key_tracking_ids.items():
+            if last_class == class_name:
+                distance = self.calculate_distance(center, last_center)
+                if distance < TRACKING_DISTANCE_THRESHOLD and distance < min_distance:
+                    min_distance = distance
+                    best_match_id = key_id
+
+        if best_match_id is not None:
+            # Update existing tracking
+            self.key_tracking_ids[best_match_id] = (center, class_name)
+            return best_match_id
+        else:
+            # Create new tracking ID
+            new_id = self.next_tracking_id
+            self.next_tracking_id += 1
+            self.key_tracking_ids[new_id] = (center, class_name)
+            return new_id
+
+    def create_unique_key_name(self, class_name, tracking_id):
+        """Create unique key name with tracking ID"""
+        return f"{class_name}_{tracking_id}"
+
+    def find_nearby_objects(self, key_center, key_name, object_results):
+        """Find all nearby objects with enhanced detection"""
+        nearby_objects = []
+        key_class_ids = set(self.model_keys.names.keys())
+
+        if object_results.boxes is None or len(object_results.boxes) == 0:
+            return nearby_objects
+
+        for box in object_results.boxes.data.tolist():
+            x1, y1, x2, y2, score, class_id = box
+            if score < CONF_THRESHOLD_OBJECTS:
+                continue
+
+            class_id = int(class_id)
+            if class_id in key_class_ids:
+                continue  # Skip keys
+
+            obj_name = self.model_objects.names.get(class_id, f"unknown_{class_id}")
+            obj_center = self.get_center(x1, y1, x2, y2)
+            distance = self.calculate_distance(key_center, obj_center)
+
+            if distance <= PROXIMITY_THRESHOLD:
+                priority = PRIORITY_OBJECTS.get(obj_name, 1)
+                nearby_objects.append({
+                    'name': obj_name,
+                    'distance': distance,
+                    'priority': priority,
+                    'confidence': score,
+                    'position': obj_center,
+                    'bbox': (x1, y1, x2, y2)
+                })
+
+        # Sort by priority (high to low), then by distance (low to high)
+        nearby_objects.sort(key=lambda x: (-x['priority'], x['distance']))
+        return nearby_objects
+
+    def get_two_closest_objects(self, nearby_objects):
+        """Get the two closest objects"""
+        if not nearby_objects:
+            return []
+        return nearby_objects[:2]
+
+    def create_location_description(self, nearby_objects):
+        """Generate human-friendly location from nearby objects"""
+        if not nearby_objects:
+            return "in an open area"
+
+        # Get the two closest objects
+        closest_objects = self.get_two_closest_objects(nearby_objects)
+
+        if len(closest_objects) == 1:
+            obj = closest_objects[0]
+            return f"next to a {obj['name']}"
+        elif len(closest_objects) == 2:
+            obj1, obj2 = closest_objects[0], closest_objects[1]
+            return f"next to a {obj1['name']} and a {obj2['name']}"
+        else:
+            return "in an open area"
+
+    def send_movement_notification(self, key_name, location_desc, screenshot_path, nearby_objects):
+        """Send notification with two closest objects when key moves"""
+        if not NOTIFICATION_ENABLED:
+            return
+
+        current_time = time.time()
+        # Check cooldown period
+        if current_time - self.movement_status[key_name]["last_notification"] < NOTIFICATION_COOLDOWN:
+            return
+
+        # Get two closest objects
+        closest_objects = self.get_two_closest_objects(nearby_objects)
+
+        # Create notification message
+        if len(closest_objects) == 2:
+            title = f"🔑 Key Moved!"
+            message = f"Your {key_name} moved next to a {closest_objects[0]['name']} and a {closest_objects[1]['name']}"
+        elif len(closest_objects) == 1:
+            title = f"🔑 Key Moved!"
+            message = f"Your {key_name} moved next to a {closest_objects[0]['name']}"
+        else:
+            title = f"🔑 Key Moved!"
+            message = f"Your {key_name} moved to an open area"
+
+        # Console notification
+        print(f"\n🔔 MOVEMENT ALERT: {message}")
+
+        # Desktop notification (if available)
+        if HAS_PLYER:
+            def notify():
+                try:
+                    notification.notify(
+                        title=title,
+                        message=message,
+                        app_name="Key Movement Tracker",
+                        timeout=NOTIFICATION_TIMEOUT
+                    )
+                except Exception:
+                    global HAS_PLYER
+                    HAS_PLYER = False
+
+            threading.Thread(target=notify, daemon=True).start()
+
+        self.movement_status[key_name]["last_notification"] = current_time
+
+    def log_movement(self, key_name, location_desc, screenshot_path, nearby_objects):
+        """Log movement event"""
+        movement_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "key_name": key_name,
+            "location": location_desc,
+            "screenshot": screenshot_path,
+            "nearby_objects": [
+                {
+                    "name": obj['name'],
+                    "distance": round(obj['distance'], 1),
+                    "priority": obj['priority'],
+                    "confidence": round(obj['confidence'], 2)
+                } for obj in nearby_objects[:5]
+            ],
+            "primary_object": nearby_objects[0]['name'] if nearby_objects else None
+        }
+
+        self.movement_log.append(movement_entry)
+
+        # Keep only last 100 entries
+        if len(self.movement_log) > 100:
+            self.movement_log = self.movement_log[-100:]
+
+        try:
+            with open(LOG_FILE, 'w') as f:
+                json.dump(self.movement_log, f, indent=2)
+        except Exception:
+            pass  # Silent logging
+
+    def find_key_location(self, key_name):
+        """Find current location of a specific key"""
+        # Try to find key by exact name or partial match
+        found_key = None
+        for current_key in self.current_key_locations:
+            if key_name.lower() in current_key.lower() or current_key.lower() in key_name.lower():
+                found_key = current_key
+                break
+
+        if found_key and found_key in self.current_key_locations:
+            location_info = self.current_key_locations[found_key]
+            nearby_objects = location_info['nearby_objects']
+            closest_objects = self.get_two_closest_objects(nearby_objects)
+
+            if len(closest_objects) == 2:
+                return f"Your {found_key} is next to a {closest_objects[0]['name']} and a {closest_objects[1]['name']}"
+            elif len(closest_objects) == 1:
+                return f"Your {found_key} is next to a {closest_objects[0]['name']}"
+            else:
+                return f"Your {found_key} is in an open area"
+        else:
+            # List available keys
+            if self.current_key_locations:
+                available_keys = ", ".join(self.current_key_locations.keys())
+                return f"Key '{key_name}' not found. Available keys: {available_keys}"
+            else:
+                return "No keys currently detected"
+
+    def draw_detection_info(self, frame, nearby_objects, key_center):
+        """Visualization of detected objects"""
+        if not nearby_objects:
+            return
+
+        # Draw connections to nearby objects
+        for i, obj in enumerate(nearby_objects[:5]):
+            color = (0, 255, 255) if i == 0 else (255, 255, 0)
+            thickness = 2 if i == 0 else 1
+
+            # Draw line to object
+            cv2.line(frame, key_center, obj['position'], color, thickness)
+
+            # Draw object info
+            text = f"{obj['name']} ({obj['distance']:.0f}px)"
+            text_size = cv2.getTextSize(text, self.font, 0.4, 1)[0]
+
+            # Position text near the object
+            text_x = int(obj['position'][0] - text_size[0] // 2)
+            text_y = int(obj['position'][1] - 10)
+
+            # Background rectangle for text
+            cv2.rectangle(frame, (text_x - 2, text_y - 12),
+                          (text_x + text_size[0] + 2, text_y + 2), (0, 0, 0), -1)
+            cv2.putText(frame, text, (text_x, text_y), self.font, 0.4, color, 1)
+
+            # Draw bounding box around object
+            x1, y1, x2, y2 = obj['bbox']
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 1)
+
+    def process_frame(self, frame):
+        """Process frame with improved duplicate detection prevention"""
+        # Detect keys with NMS enabled
+        results_keys = self.model_keys(
+            frame,
+            conf=CONF_THRESHOLD_KEYS,
+            iou=IOU_THRESHOLD,  # Enable NMS in YOLO
+            max_det=MAX_DETECTIONS,
+            verbose=False
+        )[0]
+
+        current_positions = {}
+        current_frame_locations = {}
+
+        # Detect all objects
+        results_objects = self.model_objects(frame, conf=CONF_THRESHOLD_OBJECTS, verbose=False)[0]
+
+        # Debug: Show total objects detected
+        if DEBUG_MODE and results_objects.boxes is not None:
+            total_objects = len(results_objects.boxes)
+            cv2.putText(frame, f"Objects: {total_objects}", (10, 50),
+                        self.font, 0.5, (255, 255, 255), 1)
+
+        # Extract and filter key detections
+        key_detections = []
+        if results_keys.boxes is not None:
+            for box in results_keys.boxes.data.tolist():
+                key_detections.append(box)
+
+        # Apply additional NMS and distance filtering
+        if len(key_detections) > 1:
+            key_detections = self.apply_nms(key_detections)
+            key_detections = self.filter_close_detections(key_detections)
+
+        # Debug: Show detection counts
+        if DEBUG_MODE:
+            cv2.putText(frame, f"Raw detections: {len(results_keys.boxes) if results_keys.boxes is not None else 0}",
+                        (10, 70), self.font, 0.4, (255, 255, 0), 1)
+            cv2.putText(frame, f"Filtered detections: {len(key_detections)}",
+                        (10, 90), self.font, 0.4, (0, 255, 0), 1)
+
+        # Process filtered detections
+        for box in key_detections:
+            x1, y1, x2, y2, score, class_id = box
+            class_id = int(class_id)
+            class_name = self.model_keys.names[class_id]
+            center = self.get_center(x1, y1, x2, y2)
+
+            # Assign tracking ID
+            tracking_id = self.assign_tracking_id(center, class_name)
+            unique_key_name = self.create_unique_key_name(class_name, tracking_id)
+
+            current_positions[unique_key_name] = center
+
+            # Draw detection box with tracking ID
+            color = self.assign_color(class_name)
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+            cv2.putText(frame, f"{class_name} ID:{tracking_id} ({score:.2f})",
+                        (int(x1), int(y1) - 10), self.font, 0.5, color, 2)
+
+            # Find nearby objects
+            nearby_objects = self.find_nearby_objects(center, unique_key_name, results_objects)
+
+            # Update current location info
+            current_frame_locations[unique_key_name] = {
+                'center': center,
+                'nearby_objects': nearby_objects,
+                'last_updated': time.time()
+            }
+
+            # Draw nearby objects visualization
+            self.draw_detection_info(frame, nearby_objects, center)
+
+            # Movement detection logic
+            if unique_key_name in self.last_positions:
+                distance = self.calculate_distance(center, self.last_positions[unique_key_name])
+
+                if DEBUG_MODE:
+                    cv2.putText(frame, f"Dist: {distance:.1f}px",
+                                (int(x1), int(y2) + 35), self.font, 0.4, (255, 255, 0), 1)
+
+                if distance > MOVEMENT_THRESHOLD:
+                    # Key is moving
+                    self.movement_status[unique_key_name]["moving"] = True
+                    self.movement_status[unique_key_name]["last_moved_time"] = time.time()
+                    self.movement_status[unique_key_name]["stable_count"] = 0
+                    self.movement_status[unique_key_name]["has_moved"] = True
+
+                    # Draw movement indicator
+                    cv2.circle(frame, center, 15, (0, 0, 255), 3)
+                    cv2.putText(frame, "MOVING", (int(x1), int(y2) + 20),
+                                self.font, 0.5, (0, 0, 255), 2)
+
+                elif self.movement_status[unique_key_name]["moving"] and self.movement_status[unique_key_name][
+                    "has_moved"]:
+                    # Key might have stopped moving
+                    time_stable = time.time() - self.movement_status[unique_key_name]["last_moved_time"]
+
+                    if DEBUG_MODE:
+                        cv2.putText(frame, f"Stable: {time_stable:.1f}s",
+                                    (int(x1), int(y2) + 50), self.font, 0.4, (0, 255, 0), 1)
+
+                    if time_stable >= STABLE_DURATION:
+                        # Key has been stable after movement
+                        location_desc = self.create_location_description(nearby_objects)
+
+                        # Save screenshot
+                        timestamp = int(time.time())
+                        shot_path = f"{SCREENSHOT_DIR}/{unique_key_name}_{timestamp}.jpg"
+                        cv2.imwrite(shot_path, frame)
+
+                        # Send notification
+                        self.send_movement_notification(unique_key_name, location_desc, shot_path, nearby_objects)
+
+                        # Log movement
+                        self.log_movement(unique_key_name, location_desc, shot_path, nearby_objects)
+
+                        # Reset movement status
+                        self.movement_status[unique_key_name]["moving"] = False
+                        self.movement_status[unique_key_name]["has_moved"] = False
+                        self.movement_status[unique_key_name]["stable_count"] = 0
+
+                        # Visual confirmation
+                        cv2.circle(frame, center, 25, (0, 255, 0), 4)
+                        cv2.putText(frame, "MOVED!", (int(x1), int(y1) - 30),
+                                    self.font, 0.8, (0, 255, 0), 2)
+            else:
+                # First time seeing this key
+                self.movement_status[unique_key_name]["initial_position"] = center
+                self.movement_status[unique_key_name]["last_moved_time"] = time.time()
+                self.movement_status[unique_key_name]["moving"] = False
+                self.movement_status[unique_key_name]["has_moved"] = False
+                self.movement_status[unique_key_name]["tracking_id"] = tracking_id
+
+            # Show movement status on screen
+            status_color = (0, 0, 255) if self.movement_status[unique_key_name]["moving"] else (0, 255, 0)
+            status_text = "TRACKING" if self.movement_status[unique_key_name]["moving"] else "STABLE"
+            cv2.putText(frame, status_text, (int(x2) - 80, int(y1) - 10),
+                        self.font, 0.4, status_color, 1)
+
+            # Show nearby objects count
+            if nearby_objects:
+                obj_text = f"Near: {len(nearby_objects)} objects"
+                cv2.putText(frame, obj_text, (int(x1), int(y2) + 65),
+                            self.font, 0.4, (255, 255, 255), 1)
+
+        # Update current key locations
+        self.current_key_locations = current_frame_locations
+
+        # Clean up old tracking IDs
+        active_ids = set()
+        for key_name in current_positions.keys():
+            tracking_id = int(key_name.split('_')[-1])
+            active_ids.add(tracking_id)
+
+        # Remove inactive tracking IDs
+        inactive_ids = set(self.key_tracking_ids.keys()) - active_ids
+        for inactive_id in inactive_ids:
+            del self.key_tracking_ids[inactive_id]
+
+        # Show current detection count
+        detection_text = f"Keys detected: {len(current_positions)}"
+        cv2.putText(frame, detection_text, (10, FRAME_HEIGHT - 20),
+                    self.font, 0.6, (255, 255, 255), 2)
+
+        self.last_positions = current_positions.copy()
+        return frame
+
+
+def check_for_location_query():
+    """Check for location query in a separate thread"""
+    import sys
+    import select
+
+    def query_thread(tracker):
+        while True:
+            try:
+                if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+                    user_input = input().strip()
+                    if user_input.lower().startswith('where is'):
+                        key_name = user_input[8:].strip()
+                        location = tracker.find_key_location(key_name)
+                        print(f"\n📍 LOCATION: {location}\n")
+                    elif user_input.lower() == 'quit' or user_input.lower() == 'q':
+                        break
+                time.sleep(0.1)
+            except (EOFError, KeyboardInterrupt):
+                break
+
+    return query_thread
+
+
+def main():
+    # Initialize tracker
+    tracker = KeyTracker()
+
+    # Setup webcam
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+    if not cap.isOpened():
+        print("❌ Error: Could not open camera")
+        return
+
+    print("\n🚀 Key Movement Notification System Started!")
+    print("📋 Features:")
+    print("   - IMPROVED: Duplicate detection prevention")
+    print("   - IMPROVED: Consistent key tracking with IDs")
+    print("   - Notifications ONLY when keys actually move")
+    print("   - Real-time movement tracking")
+    print("   - Location detection with nearby objects")
+    print("   - Movement logging and screenshots")
+    print("   - NEW: Location query - Type 'where is [key_name]' in console")
+    print("\n⌨️  Press 'q' to quit, 's' to save current frame, 'd' to toggle debug")
+    print("🔔 You will be notified when your keys move to a new location!")
+    print("💬 Type 'where is [key_name]' in the console to find your keys!")
+    print("=" * 60)
+
+    # Start location query thread
+    query_thread = check_for_location_query()
+    location_thread = threading.Thread(target=query_thread, args=(tracker,), daemon=True)
+    location_thread.start()
+
+    frame_count = 0
+    fps_start_time = time.time()
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("❌ Error: Could not read frame")
+                break
+
+            # Process frame
+            processed_frame = tracker.process_frame(frame)
+
+            # Calculate and display FPS
+            frame_count += 1
+            if frame_count % 30 == 0:
+                fps = 30 / (time.time() - fps_start_time)
+                fps_start_time = time.time()
+                cv2.putText(processed_frame, f"FPS: {fps:.1f}", (FRAME_WIDTH - 100, 30),
+                            tracker.font, 0.6, (0, 255, 0), 2)
+
+            # Display frame
+            cv2.imshow("🔑 Key Movement Tracker (Duplicate-Free)", processed_frame)
+
+            # Handle key presses
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('s'):
+                # Manual screenshot
+                timestamp = int(time.time())
+                manual_shot = f"{SCREENSHOT_DIR}/manual_{timestamp}.jpg"
+                cv2.imwrite(manual_shot, processed_frame)
+                print(f"📸 Manual screenshot saved: {manual_shot}")
+            elif key == ord('d'):
+                # Toggle debug mode
+                global DEBUG_MODE
+                DEBUG_MODE = not DEBUG_MODE
+                print(f"🐛 Debug mode: {'ON' if DEBUG_MODE else 'OFF'}")
+
+    except KeyboardInterrupt:
+        print("\n⏹️  Interrupted by user")
+
+    except Exception as e:
+        print(f"❌ Error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        print("🏁 Key Movement Tracker stopped")
+
+        # Print final statistics
+        print("\n📊 Final Statistics:")
+        total_movements = len(tracker.movement_log)
+        print(f"   Total movements detected: {total_movements}")
+        for key_name, status in tracker.movement_status.items():
+            print(f"   {key_name}: Last position tracked")
+
+
+if __name__ == "__main__":
+    main()
