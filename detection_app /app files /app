@@ -1,0 +1,77 @@
+from flask import Flask, render_template, Response, request, jsonify
+import cv2
+from tracker import KeyTracker
+
+app = Flask(__name__)
+trackers = {}
+notifications = []
+
+
+def get_tracker(cam_id):
+    if cam_id not in trackers:
+        trackers[cam_id] = KeyTracker()
+    return trackers[cam_id]
+
+
+def gen_frames(cam_id):
+    cap = cv2.VideoCapture(cam_id)
+    if not cap.isOpened():
+        print(f"❌ Could not open camera {cam_id}")
+        return
+
+    tracker = get_tracker(cam_id)
+
+    while True:
+        success, frame = cap.read()
+        if not success:
+            break
+
+        processed_frame = tracker.process_frame(frame)
+        _, buffer = cv2.imencode('.jpg', processed_frame)
+        frame_bytes = buffer.tobytes()
+
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+
+@app.route('/')
+def index():
+    return render_template('dual_camera.html')
+
+
+@app.route('/video_feed/<int:cam_id>')
+def video_feed(cam_id):
+    return Response(gen_frames(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+@app.route('/notify', methods=['POST'])
+def notify():
+    data = request.json
+    key_name = data.get('key_name', 'Unknown Key')
+    closest_object = data.get('closest_object', 'unknown object')
+    cam_id = data.get('cam_id', 0)
+
+    # Determine room based on camera
+    room = "room one" if cam_id == 0 else "room two"
+
+    # Create notification message in the requested format
+    message = f"your keys [{key_name}] has been moved and its near [{closest_object}] its in the {room}"
+
+    print(f"🔔 Notification: {message}")
+    notifications.append({
+        "message": message,
+        "timestamp": __import__('datetime').datetime.now().strftime("%H:%M:%S")
+    })
+    return jsonify({"status": "received"})
+
+
+@app.route('/get_notifications')
+def get_notifications():
+    """Frontend will poll this to get the latest notifications."""
+    global notifications
+    recent = notifications[-10:]  # Show last 10
+    return jsonify(recent)
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
