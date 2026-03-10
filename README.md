@@ -1,27 +1,105 @@
-# key-tracker
+🔑 KeyTracker
+Camera-Based AI Key Detection & Movement Monitoring (YOLOv8)
 
-# Camera-Based-AI-Detection-System — KeyTracker (YOLOv8)
+KeyTracker is an AI-powered computer vision system that detects and tracks personal keys using YOLOv8 and real-time camera feeds.
 
-Real-time detection & tracking of personal keys with **movement alerts, screenshots, and multi-camera support**.  
-Train quickly on **Google Colab**, then run the **multi-camera app in PyCharm** (or plain Python) to watch your keys and get notified when they move.
+The system monitors your environment, detects trained keys, tracks their movement, and automatically sends alerts when a key has been moved or relocated.
+
+It is designed as a practical smart-environment assistant that helps prevent losing important personal items.
+
+🚀 Features
+
+🔍 Real-time key detection using YOLOv8
+
+🧠 Custom key training pipeline from user videos
+
+🎥 Multi-camera monitoring
+
+📸 Automatic screenshot capture when movement is detected
+
+📢 Movement notifications when a key is relocated
+
+📊 Per-class detection statistics
+
+⚡ Optimized for small-object detection
+
+🧩 Modular architecture for training, inference, and event handling
+
+🧠 How It Works
+
+The system has two main stages:
+
+1️⃣ Training Pipeline (Google Colab)
+
+Upload a video of your keys
+
+Extract frames automatically
+
+Generate training images
+
+Train a YOLOv8 object detection model
+
+Export the trained model (best.pt)
+
+The training pipeline includes:
+
+Smart frame extraction
+
+Dataset splitting
+
+Auto labeling support
+
+Augmentation
+
+Small-object optimization
+
+2️⃣ Real-Time Detection (Local Python App)
+
+After training:
+
+The system loads the trained model
+
+Opens one or more live camera feeds
+
+Detects keys in real time
+
+Tracks motion across frames
+
+Triggers events when a key stops moving
+
+When movement is confirmed the system:
+
+Saves a screenshot
+
+Logs the event
+
+Sends a notification
+
+Example message:
+
+Key "abed_key" has been moved.
+Detected near: wallet
 
 
----
 
-## ✨ What it does
-- **Detects multiple keys** you trained on (e.g., `first_key`, `second_key`, `third_key`).
-- **Watches for motion** and fires an event only **after the key finishes moving** (to avoid spam).
-- **Saves screenshots** of the scene when movement is confirmed.
-- **Sends notifications** (desktop toast / web push hooks ready).
-- **Opens multiple live cameras** simultaneously for monitoring.
-- **Shows per-class metrics & stats** after runs.
 
-![Detection statistics](images/detection_stats.jpg)
 
----
+             Training Stage (Google Colab)
+           ┌──────────────────────────────┐
+           │ Upload video of keys         │
+           │ Frame extraction             │
+           │ Dataset generation           │
+           │ YOLOv8 training              │
+           │ Export best.pt               │
+           └──────────────┬───────────────┘
+                          │
+                          ▼
+             Runtime Detection (Local App)
 
-## 🧠 Architecture (high level)
-- **Training (Colab)**: a notebook builds a YOLOv8 dataset from your video(s), optionally assists labeling, trains, and exports `best.pt`.
-- **Runtime (Local App)**: Python app loads `best.pt`, opens N live camera streams, detects keys, tracks motion, and triggers events (notifications + screenshots).
-- **Modular design**: `training/`, `inference/`, `ui/`, `events/` for clean separation.
-
+        ┌────────────────────────────────────┐
+        │ Load trained YOLO model            │
+        │ Open live cameras                  │
+        │ Detect keys                        │
+        │ Track movement                     │
+        │ Trigger notifications              │
+        └────────────────────────────────────┘
