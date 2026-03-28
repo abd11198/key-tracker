@@ -1,88 +1,60 @@
-🔑 KeyTracker
-Camera-Based AI Key Detection & Movement Monitoring (YOLOv8)
+# 🔑 Smart Key Detection & Tracking System (YOLOv8)
 
-KeyTracker is an AI-powered computer vision system that detects and tracks personal keys using YOLOv8 and real-time camera feeds.
+An end-to-end AI system that learns to detect personal objects (e.g., keys) from video input and tracks them in real-time, generating smart notifications when objects move and describing their location relative to surrounding items.
 
-The system monitors your environment, detects trained keys, tracks their movement, and automatically sends alerts when a key has been moved or relocated.
+---
 
-It is designed as a practical smart-environment assistant that helps prevent losing important personal items.
+## 📌 Overview
 
-🚀 Features
+This project implements a full computer vision pipeline combining:
 
-🔍 Real-time key detection using YOLOv8
+- Automated dataset generation  
+- Custom YOLOv8 model training  
+- Real-time object detection and tracking  
+- Context-aware notifications and logging  
 
-🧠 Custom key training pipeline from user videos
+The system is designed to work in real-world environments, focusing on **small object detection and movement analysis**.
 
-🎥 Multi-camera monitoring
+---
 
-📸 Automatic screenshot capture when movement is detected
+## 🚀 Key Features
 
-📢 Movement notifications when a key is relocated
+### 🎯 Training Pipeline
+- Train custom YOLOv8 models directly from video input  
+- Automatic frame extraction and labeling (no manual annotation)  
+- Optional reference image matching using SIFT  
+- Multi-class support for detecting multiple keys  
+- Smart dataset splitting (train/validation)  
+- Optimized for small object detection  
 
-📊 Per-class detection statistics
+---
 
-⚡ Optimized for small-object detection
+### 🎥 Real-Time Tracking System
+- Live webcam-based detection and tracking  
+- Unique ID assignment for each detected object  
+- Movement detection triggered only after stabilization  
+- Duplicate detection filtering (IoU + spatial distance)  
 
-🧩 Modular architecture for training, inference, and event handling
+---
 
-🧠 How It Works
+### 🔔 Smart Notifications
+- Alerts triggered when objects are moved  
+- Human-readable descriptions:  
+  > "Your key moved next to a wallet and laptop"  
+- Desktop notifications (if supported)  
 
-The system has two main stages:
+---
 
-1️⃣ Training Pipeline (Google Colab)
+### 📍 Location Awareness
+- Detects nearby objects using YOLO  
+- Generates contextual descriptions of object location  
+- Supports interactive queries:
+  ```bash
+  where is <key_name>
 
-Upload a video of your keys
+---
 
-Extract frames automatically
-
-Generate training images
-
-Train a YOLOv8 object detection model
-
-Export the trained model (best.pt)
-
-The training pipeline includes:
-
-Smart frame extraction
-
-Dataset splitting
-
-Auto labeling support
-
-Augmentation
-
-Small-object optimization
-
-2️⃣ Real-Time Detection (Local Python App)
-
-After training:
-
-The system loads the trained model
-
-Opens one or more live camera feeds
-
-Detects keys in real time
-
-Tracks motion across frames
-
-Triggers events when a key stops moving
-
-When movement is confirmed the system:
-
-Saves a screenshot
-
-Logs the event
-
-Sends a notification
-
-Example message:
-
-Key "abed_key" has been moved.
-Detected near: wallet
-
-
-
-
+## 🧱 Project Structure
 
              Training Stage (Google Colab)
            ┌──────────────────────────────┐
@@ -103,3 +75,7 @@ Detected near: wallet
         │ Track movement                     │
         │ Trigger notifications              │
         └────────────────────────────────────┘
+
+
+
+
